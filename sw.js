@@ -1,4 +1,4 @@
-const CACHE_NAME = "hikizan-v4";
+const CACHE_NAME = "hikizan-v7";
 const ASSETS = [
   "./index.html",
   "./manifest.json",

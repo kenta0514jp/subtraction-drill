@@ -27,14 +27,17 @@
 const { useState, useEffect, useRef, useCallback, createElement: h } = React;
 
 const PROBLEMS_PER_SESSION = 20;
-const STORAGE_KEY = "hikizan-drill-records";
+const STORAGE_KEY = "hikizan-drill-records-v2";
 
-function loadRecords() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
-  catch { return []; }
+function loadAllRecords() {
+  try {
+    const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (data && typeof data === "object" && !Array.isArray(data)) return data;
+    return { "2digit": [], "3digit": [], "mixed": [] };
+  } catch { return { "2digit": [], "3digit": [], "mixed": [] }; }
 }
-function saveRecords(records) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); } catch {}
+function saveAllRecords(allRecords) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(allRecords)); } catch {}
 }
 
 function generateProblem(difficulty) {
@@ -145,15 +148,15 @@ function StatsPanel({ records }) {
 
 function NumPad({ onDigit, onDelete, onSubmit, disabled }) {
   const bs = (special) => ({
-    width: special ? "auto" : 80, height: 66, borderRadius: 12, border: "none",
-    fontSize: 26, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace",
+    width: special ? "auto" : 96, height: 76, borderRadius: 14, border: "none",
+    fontSize: 32, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace",
     cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.4 : 1,
     background: special === "submit" ? "#e8724a" : special === "delete" ? "#e8e5dd" : "#fff",
     color: special === "submit" ? "#fff" : "#2d2a24",
     boxShadow: special === "submit" ? "0 2px 8px rgba(232,114,74,0.3)" : "0 1px 3px rgba(0,0,0,0.08)",
     transition: "transform 0.1s", flex: special ? "1" : undefined
   });
-  return h("div", { style: { display: "flex", flexDirection: "column", gap: 10, maxWidth: 360, margin: "0 auto" } },
+  return h("div", { style: { display: "flex", flexDirection: "column", gap: 10, maxWidth: 400, margin: "0 auto" } },
     [[1,2,3],[4,5,6],[7,8,9]].map((row, ri) =>
       h("div", { key: ri, style: { display: "flex", gap: 8, justifyContent: "center" } },
         row.map(n => h("button", { key: n, style: bs(), onClick: () => !disabled && onDigit(n), disabled }, n))
@@ -169,7 +172,7 @@ function NumPad({ onDigit, onDelete, onSubmit, disabled }) {
 
 function App() {
   const [screen, setScreen] = useState("home");
-  const [difficulty, setDifficulty] = useState("mixed");
+  const [difficulty, setDifficulty] = useState("2digit");
   const [problems, setProblems] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [input, setInput] = useState("");
@@ -177,7 +180,8 @@ function App() {
   const [startTime, setStartTime] = useState(null);
   const [problemStart, setProblemStart] = useState(null);
   const [elapsed, setElapsed] = useState(0);
-  const [records, setRecords] = useState(() => loadRecords());
+  const [allRecords, setAllRecords] = useState(() => loadAllRecords());
+  const records = allRecords[difficulty] || [];
   const [feedback, setFeedback] = useState(null);
   const timerRef = useRef(null);
 
@@ -215,7 +219,8 @@ function App() {
         const avgTime = totalTime / PROBLEMS_PER_SESSION;
         const record = { date: new Date().toISOString(), totalTime, avgTime, accuracy: Math.round((correctCount/PROBLEMS_PER_SESSION)*100), difficulty, correctCount, total: PROBLEMS_PER_SESSION };
         const updated = [...records, record];
-        setRecords(updated); saveRecords(updated); setScreen("result");
+        const newAll = { ...allRecords, [difficulty]: updated };
+        setAllRecords(newAll); saveAllRecords(newAll); setScreen("result");
       } else {
         setCurrentIdx(currentIdx + 1); setProblemStart(Date.now());
       }
@@ -223,14 +228,16 @@ function App() {
   };
 
   const resetRecords = () => {
-    if (confirm("記録をすべてリセットしますか？")) {
-      setRecords([]); localStorage.removeItem(STORAGE_KEY);
+    if (confirm("この難易度の記録をリセットしますか？")) {
+      const newAll = { ...allRecords, [difficulty]: [] };
+      setAllRecords(newAll); saveAllRecords(newAll);
     }
   };
 
   const exportRecords = () => {
-    if (records.length === 0) { alert("まだ記録がありません"); return; }
-    const json = JSON.stringify(records, null, 2);
+    const total = Object.values(allRecords).reduce((s, a) => s + a.length, 0);
+    if (total === 0) { alert("まだ記録がありません"); return; }
+    const json = JSON.stringify(allRecords, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -245,13 +252,27 @@ function App() {
     reader.onload = (ev) => {
       try {
         const imported = JSON.parse(ev.target.result);
-        if (!Array.isArray(imported)) { alert("データの形式が正しくありません"); return; }
-        const merged = [...records];
-        const existingDates = new Set(records.map(r => r.date));
+        let importObj;
+        if (Array.isArray(imported)) {
+          // Old format: flat array -> sort into difficulties by record.difficulty
+          importObj = { "2digit": [], "3digit": [], "mixed": [] };
+          imported.forEach(r => {
+            const d = r.difficulty || "mixed";
+            if (!importObj[d]) importObj[d] = [];
+            importObj[d].push(r);
+          });
+        } else if (typeof imported === "object") {
+          importObj = imported;
+        } else { alert("データの形式が正しくありません"); return; }
         let added = 0;
-        imported.forEach(r => { if (r.date && !existingDates.has(r.date)) { merged.push(r); added++; } });
-        merged.sort((a, b) => new Date(a.date) - new Date(b.date));
-        setRecords(merged); saveRecords(merged);
+        const newAll = { ...allRecords };
+        for (const d of Object.keys(importObj)) {
+          if (!newAll[d]) newAll[d] = [];
+          const existingDates = new Set(newAll[d].map(r => r.date));
+          (importObj[d] || []).forEach(r => { if (r.date && !existingDates.has(r.date)) { newAll[d].push(r); added++; } });
+          newAll[d].sort((a, b) => new Date(a.date) - new Date(b.date));
+        }
+        setAllRecords(newAll); saveAllRecords(newAll);
         alert(added > 0 ? added + "件の記録を追加しました！" : "新しい記録はありませんでした（すべて既存）");
       } catch { alert("ファイルの読み込みに失敗しました"); }
     };
@@ -302,10 +323,10 @@ function App() {
     h("div", { style: { marginTop: 32 } },
       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
         h("div", { style: { fontSize: 14, fontWeight: 600 } }, "📈 上達グラフ"),
-        records.length > 0 && h("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
-          h("button", { onClick: exportRecords, style: { background: "#fff", border: "1.5px solid #d5d2ca", borderRadius: 10, fontSize: 14, color: "#2d2a24", cursor: "pointer", padding: "10px 16px", fontWeight: 600 } }, "📤 バックアップ"),
+        h("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+          records.length > 0 && h("button", { onClick: exportRecords, style: { background: "#fff", border: "1.5px solid #d5d2ca", borderRadius: 10, fontSize: 14, color: "#2d2a24", cursor: "pointer", padding: "10px 16px", fontWeight: 600 } }, "📤 バックアップ"),
           h("button", { onClick: () => importRef.current && importRef.current.click(), style: { background: "#fff", border: "1.5px solid #d5d2ca", borderRadius: 10, fontSize: 14, color: "#2d2a24", cursor: "pointer", padding: "10px 16px", fontWeight: 600 } }, "📥 復元"),
-          h("button", { onClick: resetRecords, style: { background: "none", border: "1px solid #e8e5dd", borderRadius: 10, fontSize: 12, color: "#b0a99e", cursor: "pointer", padding: "10px 12px" } }, "リセット"),
+          records.length > 0 && h("button", { onClick: resetRecords, style: { background: "none", border: "1px solid #e8e5dd", borderRadius: 10, fontSize: 12, color: "#b0a99e", cursor: "pointer", padding: "10px 12px" } }, "リセット"),
           h("input", { ref: importRef, type: "file", accept: ".json", onChange: importRecords, style: { display: "none" } })
         )
       ),
